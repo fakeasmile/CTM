@@ -30,7 +30,7 @@ library(Matrix)
 BASE_DIR <- "d:/CTM"
 PREP_DIR <- file.path(BASE_DIR, "output", "preprocessing")  # Python 输出目录
 OUTPUT_DIR <- file.path(BASE_DIR, "output", "ctm_model")     # R 输出目录
-K <- 30            # 主题数（可调整）
+K <- 10            # 主题数（可调整）
 SEED <- 42         # 随机种子
 TOP_N <- 15        # 每个主题展示的 Top-N 词数
 

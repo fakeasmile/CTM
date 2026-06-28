@@ -56,4 +56,6 @@ develop-eggs/
 
 data/
 docs/
+output/
+output/ctm_model
 ```
