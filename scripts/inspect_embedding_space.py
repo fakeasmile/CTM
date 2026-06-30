@@ -46,7 +46,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "raw"
@@ -136,7 +136,7 @@ def load_encoder_model(model_path: Path, model_name: str):
     print(f"Loading model from {llm_path}")
     model_kwargs = {
         "trust_remote_code": True,
-        "torch_dtype": torch.float32,
+        "torch_dtype": torch.float16,  # float16：9B≈18GB，适配32G显卡
         "output_hidden_states": True,
     }
     quantization = model_config["quantization"]
@@ -145,10 +145,11 @@ def load_encoder_model(model_path: Path, model_name: str):
         if quantization == "fp8":
             model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
 
-    model = AutoModel.from_pretrained(llm_path, **model_kwargs)
+    model = AutoModelForCausalLM.from_pretrained(llm_path, **model_kwargs)
     if quantization is None:
         model = model.cuda()
     model.eval()
+    print(f"  dtype: {next(model.parameters()).dtype}")
 
     return tokenizer, model, model_config
 
@@ -164,7 +165,8 @@ def encode_texts(texts: list[str], tokenizer, model, batch_size: int = 64,
                           max_length=max_length, return_tensors="pt")
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
         outputs = model(**inputs)
-        last_hidden = outputs.last_hidden_state
+        # 从 CausalLM 输出中提取最后一层 hidden state
+        last_hidden = outputs.hidden_states[-1]
         attention_mask = inputs["attention_mask"].unsqueeze(-1)
         masked_hidden = last_hidden * attention_mask
         sum_hidden = masked_hidden.sum(dim=1)
@@ -459,11 +461,16 @@ def main():
         print("=" * 60 + "\n")
 
         # 设置确定性模式
-        try:
-            torch.use_deterministic_mode(True)
-            print("已启用确定性模式")
-        except Exception as e:
-            print(f"警告：确定性模式启用失败: {e}")
+        if hasattr(torch, 'use_deterministic_mode'):
+            try:
+                torch.use_deterministic_mode(True)
+                print("已启用确定性模式 (torch.use_deterministic_mode)")
+            except Exception as e:
+                print(f"警告：确定性模式启用失败: {e}")
+        else:
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            print("已启用确定性模式 (cudnn.deterministic=True)")
 
         tokenizer, model, model_config = load_encoder_model(MODELS_PATH, model_name)
 

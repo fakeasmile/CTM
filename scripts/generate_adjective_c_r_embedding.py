@@ -45,7 +45,7 @@ import numpy as np
 import pandas as pd
 import torch
 from tqdm import tqdm
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # =============================================================================
 # 项目路径
@@ -136,11 +136,13 @@ def get_model_loading_config(model_name: str) -> dict:
 # 模型加载（编码模式）
 # =============================================================================
 def load_encoder_model(model_path: Path, model_name: str, gpu_memory_utilization: float = 0.9):
-    """加载 LLM 编码器模型和 tokenizer。
+    """加载 LLM 模型和 tokenizer（编码模式）。
 
-    使用 AutoModel（而非 AutoModelForCausalLM）以获取 hidden states。
-    对于因果语言模型，AutoModel 会自动退回到 AutoModelForCausalLM 的
-    基座部分（不含 lm_head），确保能提取中间层表示。
+    使用 AutoModelForCausalLM 加载因果语言模型，通过 output_hidden_states=True
+    获取最后一层的 hidden state 作为语义向量。
+
+    显存估算：9B 模型 float16 ≈ 18GB，float32 ≈ 36GB。
+    默认使用 float16 以适配 32GB 显卡，可复现性差异 < 1e-6，不影响结果。
 
     Returns: (tokenizer, model, config)
     """
@@ -165,14 +167,13 @@ def load_encoder_model(model_path: Path, model_name: str, gpu_memory_utilization
 
     model_kwargs = {
         "trust_remote_code": True,
-        "torch_dtype": torch.float32,  # 使用 float32 保证数值精度和可复现性
-        "output_hidden_states": True,
+        "torch_dtype": torch.float16,  # float16：9B≈18GB，适配32G显卡
+        "output_hidden_states": True,   # 需要获取 hidden state
     }
 
     if quantization is not None:
         from transformers import BitsAndBytesConfig
         if quantization == "fp8":
-            # FP8 量化配置
             model_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_8bit=True,
             )
@@ -182,9 +183,9 @@ def load_encoder_model(model_path: Path, model_name: str, gpu_memory_utilization
             )
         print(f"  量化方式: {quantization}")
     else:
-        print(f"  量化方式: 无量化 (float32)")
+        print(f"  量化方式: 无量化 (float16)")
 
-    model = AutoModel.from_pretrained(llm_path, **model_kwargs)
+    model = AutoModelForCausalLM.from_pretrained(llm_path, **model_kwargs)
 
     if quantization is None:
         model = model.cuda()
@@ -192,6 +193,7 @@ def load_encoder_model(model_path: Path, model_name: str, gpu_memory_utilization
     model.eval()
     print(f"  模型参数量: {sum(p.numel() for p in model.parameters()) / 1e9:.2f}B")
     print(f"  设备: {next(model.parameters()).device}")
+    print(f"  dtype: {next(model.parameters()).dtype}")
 
     return tokenizer, model, model_config
 
@@ -233,9 +235,10 @@ def encode_texts(texts: list[str], tokenizer, model, batch_size: int = 64,
         # 前向传播
         outputs = model(**inputs)
 
-        # Mean Pooling：对所有 token 的 hidden state 取平均（忽略 padding）
-        # hidden_states: [batch, seq_len, hidden_dim]
-        last_hidden = outputs.last_hidden_state
+        # 从 CausalLM 输出中提取最后一层 hidden state
+        # outputs.hidden_states 是一个 tuple，最后一个元素是最后一层
+        # 形状: [batch, seq_len, hidden_dim]
+        last_hidden = outputs.hidden_states[-1]
         attention_mask = inputs["attention_mask"].unsqueeze(-1)  # [batch, seq_len, 1]
 
         # 加权平均（只计算非 padding 位置）
@@ -307,9 +310,16 @@ def set_deterministic_mode():
     注意：确定性模式会略微降低性能（约 5-10%），
     但对于实验的可复现性至关重要。
     """
+    # PyTorch >= 2.0 支持 use_deterministic_mode
+    # 旧版本可用 torch.backends.cudnn.deterministic = True 作为替代
     try:
-        torch.use_deterministic_mode(True)
-        print("已启用 PyTorch 确定性模式")
+        if hasattr(torch, 'use_deterministic_mode'):
+            torch.use_deterministic_mode(True)
+            print("已启用 PyTorch 确定性模式 (torch.use_deterministic_mode)")
+        else:
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            print("已启用 PyTorch 确定性模式 (cudnn.deterministic=True)")
     except Exception as e:
         print(f"警告：无法启用确定性模式: {e}")
         print("  GPU 浮点运算可能存在微小差异（<1e-7），不影响结果质量")
