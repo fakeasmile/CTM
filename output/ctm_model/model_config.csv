@@ -1,7 +1,10 @@
-"parameter","value"
-"K","10"
-"SEED","42"
-"TOP_N","15"
-"input_dir","d:/CTM/output/preprocessing"
-"output_dir","d:/CTM/output/ctm_model"
-"start_time","2026-06-24 18:59:12.162404"
+parameter,value
+K,10
+SEED,42
+TOP_N,15
+method,LDA(sklearn)
+max_iter,50
+input_dir,d:\CTM\output\preprocessing
+output_dir,d:\CTM\output\ctm_model
+start_time,2026-06-28 15:18:07
+elapsed_sec,240.2

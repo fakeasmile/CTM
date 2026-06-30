@@ -42,12 +42,14 @@ DATA_DIR = BASE_DIR / "data" / "raw"
 OUTPUT_DIR = BASE_DIR / "output" / "preprocessing"
 
 TRAIN_JSON = DATA_DIR / "TOXICN" / "train.json"
-ADJ_CSV = DATA_DIR / "adjective" / "toxic_adjectives_v1.csv"
+# 优先使用 enriched 版本（含丰富伪文档），若不存在则回退到原始版本
+ADJ_CSV_ENRICHED = DATA_DIR / "adjective" / "toxic_adjectives_v1_enriched.csv"
+ADJ_CSV = ADJ_CSV_ENRICHED if ADJ_CSV_ENRICHED.exists() else DATA_DIR / "adjective" / "toxic_adjectives_v1.csv"
 STOPWORDS_FILE = BASE_DIR / "stopwords" / "hit_stopwords.txt"
 
 # 分词参数
 MIN_WORD_LEN = 2        # 保留2字以上的词
-MIN_DOC_FREQ = 5         # 词在至少5篇文档中出现才保留
+MIN_DOC_FREQ = 10        # 词在至少10篇文档中出现才保留（减少词表加速CTM训练）
 
 # ============================================================
 # 日志设置：同时输出到控制台和文件
@@ -151,17 +153,24 @@ def load_toxicn(train_json_path, log):
 
 
 def build_pseudo_docs(adj_df):
-    """为每个形容词构建伪文档"""
+    """为每个形容词构建伪文档。
+    如果存在 pseudo_doc 列（enriched版本），优先使用它作为伪文档内容；
+    否则回退到 chinese + definition 的简单拼接。
+    """
+    has_pseudo_doc = "pseudo_doc" in adj_df.columns
     pseudo_docs = []
     for _, row in adj_df.iterrows():
         chinese = str(row["chinese"]).strip()
         definition = str(row["definition"]).strip()
-        pseudo_doc = f"{chinese} {definition}"
+        if has_pseudo_doc and not (isinstance(row.get("pseudo_doc"), float) and row.get("pseudo_doc") != row.get("pseudo_doc")):
+            raw_text = str(row["pseudo_doc"]).strip()
+        else:
+            raw_text = f"{chinese} {definition}"
         pseudo_docs.append({
             "doc_id": f"adj_{_}",
             "doc_type": "adjective",
             "source": chinese,
-            "raw_text": pseudo_doc
+            "raw_text": raw_text
         })
     return pseudo_docs
 
@@ -180,6 +189,7 @@ def main():
     # 记录配置参数
     log.info(f"TRAIN_JSON    = {TRAIN_JSON}")
     log.info(f"ADJ_CSV       = {ADJ_CSV}")
+    log.info(f"  (enriched版本: {ADJ_CSV_ENRICHED.exists()})")
     log.info(f"STOPWORDS_FILE= {STOPWORDS_FILE}")
     log.info(f"OUTPUT_DIR    = {OUTPUT_DIR}")
     log.info(f"MIN_WORD_LEN  = {MIN_WORD_LEN}")
@@ -193,6 +203,12 @@ def main():
     log.info(f"停用词数量: {len(STOPWORDS)}")
 
     adj_df = load_adjectives(ADJ_CSV, log)
+    if "pseudo_doc" in adj_df.columns:
+        log.info(f"  检测到 enriched 版本 (含 pseudo_doc 列)")
+        avg_len = adj_df["pseudo_doc"].str.len().mean()
+        log.info(f"  伪文档平均长度: {avg_len:.0f} 字")
+    else:
+        log.info(f"  使用原始版本 (仅 chinese + definition)")
     toxicn_data = load_toxicn(TRAIN_JSON, log)
 
     # ---- 2. 构造文档列表 ----
